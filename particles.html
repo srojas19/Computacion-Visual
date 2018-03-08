@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<!--
+  The MIT License (MIT)
+
+  Copyright (c) 2017 Tarek Sherif
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of
+  this software and associated documentation files (the "Software"), to deal in
+  the Software without restriction, including without limitation the rights to
+  use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+  the Software, and to permit persons to whom the Software is furnished to do so,
+  subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+  FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+  COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+  IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+  CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+-->
+<!-- 
+    Versión comentada del código
+    Por Santiago Rojas Herrera
+    Curso de Computación Visual Interactiva
+    Universidad de los Andes
+    2018 
+-->
+<html>
+<head>
+    <title>WebGL 2 Example: Particles</title>
+    <!-- API para operar matrices. En realidad, este API no se usa en el ejemplo, y probablemente
+    se dejo al ser basado en un snippet u otro ejemplo -->
+    <script src="utils/gl-matrix.js"></script>
+
+    <!-- CSS para que el header de la pagina se vea mejor. No es necesario -->
+    <link rel="stylesheet" href="css/webgl2examples.css"> 
+</head>
+<body>
+
+    <!-- Header con links no relevante al ejemplo en WebGL -->
+    <div id="example-title">
+        <header>WebGL 2 Example: Particles</header>
+        <div id="features">
+            Features: Vertex Arrays, Uniform Buffers, Transform Feedback
+        </div>
+        <div>
+            <a href="https://github.com/tsherif/webgl2examples/blob/master/particles.html">Source code</a>
+        </div>
+    </div>
+
+    <!-- Canvas donde se muestra la visualizacion -->
+    <canvas id="gl-canvas"></canvas>
+
+
+    <!-- Vertex shader. Comentarios dentro del shader estan en '//' -->
+    <script id="main-vs" type="x-shader/vs">
+        #version 300 es
+
+        // Se define el uniform como std140, pues esto hace innecesario consultar los
+        // offsets para definiciones
+        // Para mas informacion, revisar https://www.khronos.org/opengl/wiki/Interface_Block_(GLSL)#Memory_layout
+        layout(std140) uniform;
+
+        // Inputs del shader. Se tiene la posicion, velocidad y color de la particula
+        layout(location=0) in vec3 aPosition;
+        layout(location=1) in vec3 aVelocity;
+        layout(location=2) in vec3 aColor;
+
+
+        // Información (constante) de las masas que actuan sobre las particulas
+        uniform Mass {
+            float mass1Factor;  // Impacto que genera la masa 1
+            float mass2Factor;  // Impacto que genera la masa 2
+            float mass3Factor;  // Impacto que genera la masa 3
+
+            // Vease que las posiciones de las masas son vec4. Esto porque son puntos 
+            // tridimensionales, con w=1 para denotar coordenadas homogeneas
+            vec4 mass1Position; // Vector de posicion de la masa 1
+            vec4 mass2Position; // Vector de posicion de la masa 2
+            vec4 mass3Position; // Vector de posicion de la masa 3
+        };
+    
+        // Vectores de salida del shader. Posicion, velocidad nuevos, mientras el color
+        // se mantiene igual
+        out vec3 vPosition;
+        out vec3 vVelocity;
+        out vec3 vColor;
+
+        void main() {
+
+            // Variables para operar sobre posicion y velocidad de la particula
+            vec3 position = aPosition;
+            vec3 velocity = aVelocity;
+
+            // A continuacion, se calcula la distancia que la particula tiene sobre
+            // cada masa, para poder calcular el vector de aceleracion usado sobre la
+            // particula. Esto se hace a partir de las tres masas, todo sumando al vector
+            // de aceleracion.
+
+            vec3 massVec = mass1Position.xyz - position;
+            float massDist2 = max(0.01, dot(massVec, massVec));
+            vec3 acceleration = mass1Factor * normalize(massVec) / massDist2;
+
+            massVec = mass2Position.xyz - position;
+            massDist2 = max(0.01, dot(massVec, massVec));
+            acceleration += mass2Factor * normalize(massVec) / massDist2;
+
+            massVec = mass3Position.xyz - position;
+            massDist2 = max(0.01, dot(massVec, massVec));
+            acceleration += mass3Factor * normalize(massVec) / massDist2;
+
+            // Se calcula la nueva velocidad de la particula
+            velocity += acceleration;
+            velocity *= 0.9999;
+
+            // A partir de la nueva velocidad, se calcula la siguiente posicion
+            // de la particula, y se retorna esta posicion y la nueva velocidad
+            // calculada
+            vPosition = position + velocity;
+            vVelocity = velocity;
+
+            // El color de la particula no cambia
+            vColor = aColor;
+
+            // Tamaño del punuto en pixeles. Revisar https://www.khronos.org/registry/OpenGL-Refpages/gl4/html/gl_PointSize.xhtml
+            gl_PointSize = 2.0;
+
+            // Posicion de la particula. Revisar https://www.khronos.org/registry/OpenGL-Refpages/gl4/html/gl_Position.xhtml
+            gl_Position = vec4(position, 1.0);
+        }
+    </script>
+
+    <!-- Fragment shader. Comentarios dentro del shader estan en '//' -->
+    <script id="main-fs" type="x-fragment-shader">
+        #version 300 es
+        precision highp float;
+
+        // Se entra el color de la particula en rgb
+        in vec3 vColor;
+
+        // Se devuelve el color de la particula, con un alfa, en rgba
+        out vec4 fragColor;
+        void main() {
+
+            // Se agrega el alfa para que haya transparencia en las particulas
+            float alpha = 0.3;
+            fragColor = vec4(vColor * alpha, alpha);
+        }
+    </script>
+    <script type="text/javascript">
+
+        // Configuración inicial del canvas
+        var canvas = document.getElementById("gl-canvas");
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        
+
+        // Se pide el contexto. Notese que en este ejemplo se usa webgl2.
+        var gl = canvas.getContext("webgl2");
+        if (!gl) {
+            console.error("WebGL 2 not available");
+            document.body.innerHTML = "This example requires WebGL 2 which is unavailable on this system."
+        }
+
+
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.enable(gl.BLEND);
+
+        // Revisar https://www.khronos.org/registry/OpenGL-Refpages/gl4/html/glBlendFunc.xhtml
+        // Se hace blending del alpha de los colores de los vertices de entrada. 
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+        ///////////////////////////
+        // Set up del programa
+        ///////////////////////////
+
+        // Se saca el codigo de los shaders
+        var vsSource = document.getElementById("main-vs").text.trim();
+        var fsSource = document.getElementById("main-fs").text.trim();
+        
+        // Se crea y compila el vertex shader
+        var vertexShader = gl.createShader(gl.VERTEX_SHADER);
+        gl.shaderSource(vertexShader, vsSource);
+        gl.compileShader(vertexShader);
+
+        // Se verifica que el vertex shader haya compilado satisfactoriamente
+        if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+            console.error(gl.getShaderInfoLog(vertexShader));
+        }
+
+        
+        // Se crea y compila el fragment shader
+        var fragment = gl.createShader(gl.FRAGMENT_SHADER);
+        gl.shaderSource(fragment, fsSource);
+        gl.compileShader(fragment);
+
+        // Se verifica que el fragment shader haya compilado satisfactoriamente
+        if (!gl.getShaderParameter(fragment, gl.COMPILE_STATUS)) {
+            console.error(gl.getShaderInfoLog(fragment));
+        }
+
+        // Se crea el programa webgl con los shaders definidos
+        var program = gl.createProgram();
+        gl.attachShader(program, vertexShader);
+        gl.attachShader(program, fragment);
+
+        // Operacion WebGL2. Con transform feedback se permiten capturar las primitivas
+        // generadas por el procesamiento del vertex shader, para poder usar los datos
+        // multiples veces.
+        // Se escriben los atributos en multiples buffers
+        // En este caso, se hace con la posicion y velocidad de las particulas.
+        gl.transformFeedbackVaryings(program, ["vPosition", "vVelocity"], gl.SEPARATE_ATTRIBS);
+        gl.linkProgram(program);
+
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            console.error(gl.getProgramInfoLog(program));
+        }
+
+        gl.useProgram(program);
+
+        ///////////////////////////////////////////
+        // Conseguir posiciones de los uniforms
+        ///////////////////////////////////////////
+
+        // Operacion WebGL2.
+        // Revisar https://www.khronos.org/registry/OpenGL-Refpages/es3.0/html/glUniformBlockBinding.xhtml
+        var massUniformsLocation = gl.getUniformBlockIndex(program, "Mass");
+        gl.uniformBlockBinding(program, massUniformsLocation, 0);
+
+
+        //////////////////////////
+        // Set up de la geometria
+        //////////////////////////
+
+        // NOTA: Se redujo el numero de particulas a la mitad, en relacion al codigo del ejemplo,
+        // para mejorar el desempeño de la visualizacion.
+        var NUM_PARTICLES = 100000;  // Numero de particulas a dibujar.
+        var positionData = new Float32Array(NUM_PARTICLES * 3);  // Posicion de las particulas a dibujar
+        var velocityData = new Float32Array(NUM_PARTICLES * 3);  // Velocidad de las particulas a dibujar
+        var colorData = new Float32Array(NUM_PARTICLES * 3);     // Colores de las particulas a dibujar
+
+        for (var i = 0; i < NUM_PARTICLES; ++i) {
+            var vec3i = i * 3;
+
+            // Se genera aleatoriamente la posicion de la particula
+            positionData[vec3i] = Math.random() * 2 - 1;
+            positionData[vec3i + 1] = Math.random() * 2 - 1;
+            positionData[vec3i + 2] = Math.random() * 2 - 1;
+
+            // Se genera aleatoriamente el color de la particula
+            colorData[vec3i] = Math.random();
+            colorData[vec3i + 1] = Math.random();
+            colorData[vec3i + 2] = Math.random();
+        }
+
+        //////////////////////////////////////
+        // Set up del Transform Feedback
+        //////////////////////////////////////
+
+        // Con transform feedback se permiten capturar las primitivas
+        // generadas por el procesamiento del vertex shader, para poder usar los datos
+        // multiples veces. Con esto, no es necesario transferir los datos de memoria grafica
+        // a memoria principal.
+        // En este caso, se hace con la posicion y velocidad de las particulas.
+        // Revisar https://open.gl/feedback
+
+        // Vertex array maneja el input
+        var vertexArrayA = gl.createVertexArray(); // Operacion de WebGL2
+        gl.bindVertexArray(vertexArrayA);
+
+        // Se crean buffers de posicion, velocidad y color para las particulas
+
+        var positionBufferA = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBufferA);
+        gl.bufferData(gl.ARRAY_BUFFER, positionData, gl.STREAM_COPY);
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(0);
+
+        var velocityBufferA = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, velocityBufferA);
+        gl.bufferData(gl.ARRAY_BUFFER, velocityData, gl.STREAM_COPY);
+        gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(1);
+
+        var colorBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, colorData, gl.STATIC_DRAW);
+        gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(2);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+        // Transform feedback maneja el output
+        var transformFeedbackA = gl.createTransformFeedback();
+        gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, transformFeedbackA);
+        gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, positionBufferA);
+        gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 1, velocityBufferA);
+
+
+        // Se crea otro vertexArray y sus buffers respectivos para las particulas.
+        // Con esto, se permite hacer la transicion del movimiento de las particulas.
+        // Se sospecha que puede haber una forma mas eficiente de hacer esto.
+
+        // Vertex array handles input
+        var vertexArrayB = gl.createVertexArray();
+        gl.bindVertexArray(vertexArrayB);
+
+        var positionBufferB = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBufferB);
+        gl.bufferData(gl.ARRAY_BUFFER, positionData, gl.STREAM_COPY);
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(0);
+
+        var velocityBufferB = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, velocityBufferB);
+        gl.bufferData(gl.ARRAY_BUFFER, velocityData, gl.STREAM_COPY);
+        gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(1);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+        gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(2);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+        // Transform feedback handles output
+        var transformFeedbackB = gl.createTransformFeedback();
+        gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, transformFeedbackB);
+        gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, positionBufferB);
+        gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 1, velocityBufferB);
+
+        gl.bindVertexArray(null);
+        gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+
+
+        var currentVertexArray = vertexArrayA;  // Arreglo de vertices actual
+        var currentTransformFeedback = transformFeedbackB; // Transform feedback actual
+        
+        ///////////////////
+        // Datos de Uniforms
+        ///////////////////
+
+        var massUniformData = new Float32Array(20);
+
+        // Se genera aleatoriamente el peso de las masas. Revisar en el vertex shader
+        // el massFactor de cada masa.
+        massUniformData[0] = Math.random() / 30000;
+        massUniformData[1] = Math.random() / 30000;
+        massUniformData[2] = Math.random() / 30000;
+
+        // Se definen las coordenadas de la masa 1
+        massUniformData.set(new Float32Array([
+            Math.random() * 2.0 - 1.0,
+            Math.random() * 2.0 - 1.0,
+            Math.random() * 2.0 - 1.0
+        ]), 4);
+
+        // Se definen las coordenadas de la masa 2
+        massUniformData.set(new Float32Array([
+            Math.random() * 2.0 - 1.0,
+            Math.random() * 2.0 - 1.0,
+            Math.random() * 2.0 - 1.0
+        ]), 8);
+        
+        // Se definen las coordenadas de la masa 3
+        massUniformData.set(new Float32Array([
+            Math.random() * 2.0 - 1.0,
+            Math.random() * 2.0 - 1.0,
+            Math.random() * 2.0 - 1.0
+        ]), 16);
+        
+        // Se crea y guarda el buffer con la informacion de las masas
+        var massUniformBuffer = gl.createBuffer();
+        gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, massUniformBuffer);
+        gl.bufferData(gl.UNIFORM_BUFFER, massUniformData, gl.STATIC_DRAW);
+
+        function draw() {
+            
+            // Se vacian los buffers de color
+            gl.clear(gl.COLOR_BUFFER_BIT);
+
+            //////////////////////////////
+            // Dibujado
+            //////////////////////////////
+
+            // Se hace binding de los vertexArray y tranformFeedback actuales.
+            gl.bindVertexArray(currentVertexArray);
+            gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, currentTransformFeedback);
+
+            // NOTE: THIS PART IS NECESSARY DUE TO A BUG IN ANGLE'S HANDLING 
+            // OF TRANFORM FEEDBACK OBJECTS.
+            // TO BE REMOVED WHEN THAT'S FIXED.
+            if (currentTransformFeedback === transformFeedbackA) {
+                gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, positionBufferA);
+                gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 1, velocityBufferA);
+            } else {
+                gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, positionBufferB);
+                gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 1, velocityBufferB);
+            }
+
+            // Operacion WebGL2. Ejecuta el transform feedback, para recibir el output
+            // del vertex shader
+            gl.beginTransformFeedback(gl.POINTS);
+            gl.drawArrays(gl.POINTS, 0, NUM_PARTICLES);
+            gl.endTransformFeedback();
+
+            //////////////////
+            // Intercambio de buffers
+            //////////////////
+
+            // Con los dos vertexArrays y transformFeedbacks, se opera cada vez
+            // en un par de buffers distinto.
+
+            if (currentVertexArray === vertexArrayA) {
+                currentVertexArray = vertexArrayB;
+                currentTransformFeedback = transformFeedbackA;
+            } else {
+                currentVertexArray = vertexArrayA;
+                currentTransformFeedback = transformFeedbackB;
+            }
+
+            requestAnimationFrame(draw);
+        }
+
+        requestAnimationFrame(draw);
+            
+
+    </script>
+    <a href="https://github.com/tsherif/webgl2examples" id="github-ribbon"><img style="position: absolute; top: 0; right: 0; border: 0;" src="https://camo.githubusercontent.com/365986a132ccd6a44c23a9169022c0b5c890c387/68747470733a2f2f73332e616d617a6f6e6177732e636f6d2f6769746875622f726962626f6e732f666f726b6d655f72696768745f7265645f6161303030302e706e67" alt="Fork me on GitHub" data-canonical-src="https://s3.amazonaws.com/github/ribbons/forkme_right_red_aa0000.png"></a>
+</body>
+</html>
